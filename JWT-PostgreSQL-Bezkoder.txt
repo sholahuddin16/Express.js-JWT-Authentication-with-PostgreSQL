@@ -1,0 +1,542 @@
+Node.js JWT Authentication with PostgreSQL example
+
+1. buat structure folder seperti ini
+A. config
+auth.confic.js
+db.confic.js
+
+B. controllers
+auth.controller.js
+user.controller.js
+
+C. middleware
+authJwt.js
+index.js
+verifySignUp.js
+
+D. models
+index.js
+role.model.js
+user.model.js
+
+E. routes
+auth.routes.js
+user.routes.js
+
+f. server.js
+
+penjelasan
+– config
+
+configure PostgreSQL database & Sequelize
+configure Auth Key
+– routes
+
+auth.routes.js: POST signup & signin
+user.routes.js: GET public & protected resources
+– middlewares
+
+verifySignUp.js: check duplicate Username or Email
+authJwt.js: verify Token, check User roles in database
+– controllers
+
+auth.controller.js: handle signup & signin actions
+user.controller.js: return public & protected content
+– models for Sequelize Models
+
+user.model.js
+role.model.js
+– server.js: import and initialize neccesary modules and routes, listen for connections.
+
+2. Instal express
+npm init
+
+3. install package
+npm install express sequelize pg pg-hstore body-parser cors jsonwebtoken bcryptjs --save
+
+4. setup express web server
+const express = require("express");
+const bodyParser = require("body-parser");
+const cors = require("cors");
+const app = express();
+var corsOptions = {
+    origin: "http://localhost:8081"
+};
+
+app.use(cors(corsOptions));
+
+// parse requests of content-type - application/json
+app.use(bodyParser.json());
+
+// parse requests of content-type - application/x-www-form-urlencoded
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// simple route
+app.get("/", (req, res) => {
+    res.json({ message: "Welcome to Backend" });
+});
+
+// set port, listen for requests
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+})
+
+5. konfigurasi PostgreSQL database dan Sequelize di config/dn.config.js
+module.exports = {
+    HOST: "localhost",
+    USER: "postgres",
+    PASSWORD: "kincir1545",
+    DB: "testdb",
+    dialect: "postgres",
+    pool: {
+        max: 5,
+        min: 0,
+        acquire: 30000,
+        idle: 10000
+    }
+};
+
+6. Define the Sequelize Model 
+A. models/user.model.js
+module.exports = (sequelize, Sequelize) => {
+    const User = sequelize.define("users", {
+        username: {
+            type: Sequelize.STRING
+        },
+        email: {
+            type: Sequelize.STRING
+        },
+        password: {
+            type: Sequelize.STRING
+        }
+    });
+    return User;
+}
+
+B. models/role.model.js
+module.exports = (sequelize, Sequelize) => {
+    const Role = sequelize.define("roles", {
+        id: {
+            type: Sequelize.INTEGER,
+            primaryKey: true
+        },
+        name: {
+            type: Sequelize.STRING
+        }
+    });
+    return Role;
+};
+
+7. Initialize Sequelize in models/index.js
+const config = require("../config/db.config.js");
+const Sequelize = require("sequelize");
+const sequelize = new Sequelize(
+    config.DB,
+    config.USER,
+    config.PASSWORD,
+    {
+        host: config.HOST,
+        dialect: config.dialect,
+        operatorAliases: false,
+        pool: {
+            max: config.pool.max,
+            min: config.pool.min,
+            acquire: config.pool.acquire,
+            idle: config.pool.idle
+        }
+    }
+);
+const db = {};
+db.Sequelize = Sequelize;
+db.sequelize = sequelize;
+db.user = require("../models/user.model.js")(sequelize, Sequelize);
+db.role = require("../models/role.model.js")(sequelize, Sequelize);
+db.role.belongsToMany(db.user, {
+    through: "user_roles",
+    foregnKey: "roleId",
+    otherKey: "userId"
+});
+db.user.belongsToMany(db.role, {
+    through: "user_roles",
+    foregnKey: "userId",
+    otherKey: "roleId"
+});
+db.ROLES = ["user", "admin", "moderator"];
+module.exports = db;
+
+8. sync method ke server.js
+// database
+const db = require("./models");
+const Role = db.role;
+
+// db.sequelize.symc();
+// force: true will drop the table if it already exists
+db.sequelize.sync({ force: true }). then(() => {
+    console.log('Drop and Resync Db');
+    initial();
+});
+
+///
+function initial() {
+    Role.create({
+        id: 1,
+        name: "user"
+    });
+
+    Role.create({
+        id: 2,
+        name: "moderator"
+    });
+
+    Role.create({
+        id: 3,
+        name: "admin"
+    });
+}
+
+9. For production, just insert these rows manually and use sync() without parameters to avoid dropping data
+const db = require("./app/models");
+db.sequelize.sync();
+
+10. konfigurasi auth key 
+A. config/auth.config.js
+module.exports = {
+    secret: "ninja1545"
+};
+
+11. buat middleware functions  
+A. middleware/verifySignUp.js
+const db = require("../models");
+const ROLES = db.ROLES;
+const User = db.user;
+
+checkDuplicateUsernameOrEmail = (req, res, next) => {
+    //Username
+    User.findOne({
+        where: {
+            username: req.body.username
+        }
+    }).then(user => {
+        if (user) {
+            res.status(400).send({
+                message: "Failed! Username is already in use!"
+            });
+            return;
+        }
+        //Email
+        User.findOne({
+            where: {
+                email: req.body.email
+            }
+        }).then(user => {
+            if (user) {
+                res.status(400).send({
+                    message: "Failed! Email is already in use!"
+                });
+                return;
+            }
+            next();
+        });
+    });
+};
+
+checkRolesExisted = (req, res, next) => {
+    if (req.body.roles) {
+        for (let i= 0; i < req.body.roles.length; i++) {
+            if (!ROLES.includes(req.body.roles[i])) {
+                res.status(400).send({
+                    message: "Failed! Role does not exist = " + req.body.roles[i]
+                });
+                return;
+            }
+        }
+    }
+
+    next();
+};
+
+const verifySignUp = {
+    checkDuplicateUsernameOrEmail: checkDuplicateUsernameOrEmail,
+    checkRolesExisted: checkRolesExisted
+};
+
+module.exports = verifySignUp;
+
+B. middleware/authJwt.js
+const jwt = require("jsonwebtoken");
+const config = require("../config/auth.config.js");
+const db = require("../models");
+
+const User = db.user;
+
+verifyToken = (req, res, next) => {
+    let token = req.headers["x-access-token"];
+    if (!token) {
+        return res.status(403).send({
+            message: "No token provided"
+        });
+    }
+    jwt.verify(token, config.secret, (err, decoded) => {
+        if (err) {
+            return res.status(401).send({
+                message: "Unauthorized!"
+            });
+        }
+        req.userId = decoded.id;
+        next();
+    });
+};
+
+isAdmin = (req, res, next) => {
+    User.findByPk(req.userId).then(user => {
+        user.getRoles().then(roles => {
+            for (let i = 0; i < roles.length; i++) {
+                if (roles[i].name === "admin") {
+                    next();
+                    return;
+                }
+            }
+            res.status(403).send({
+                message: "Require Admin Role!"
+            });
+            return;
+        });
+    });
+};
+
+isModerator = (req, res, next) => {
+    User.findByPk(req.userId).then(user => {
+        user.getRoles().then(roles => {
+            for (let i = 0; i < roles.length; i++) {
+                if (roles[i].name === "moderator") {
+                    next();
+                    return;
+                }
+            }
+            res.status(403).send({
+                message: "Require Moderator Role!"
+            });
+        });
+    });
+};
+
+isModeratorOrAdmin = (req, res, next) => {
+    User.findByPk(req.userId).then(user => {
+        user.getRoles().then(roles => {
+            for (let i = 0; i < roles.length; i++) {
+                if (roles[i].name === "moderator") {
+                    next();
+                    return;
+                }
+                if (roles[i].name === "admin") {
+                    next();
+                    return;
+                }
+            }
+            res.status(403).send({
+                message: "Require Moderator or Admin Role!"
+            });
+        });
+    });
+};
+
+const authJwt = {
+    verifyToken: verifyToken,
+    isAdmin: isAdmin,
+    isModerator: isModerator,
+    isModeratorOrAdmin: isModeratorOrAdmin
+};
+
+module.exports = authJwt;
+
+c. middleware/index.js
+const authJwt = require("./authJwt");
+const verifySignUp = require("./verifySignUp");
+module.exports = {
+    authJwt,
+    verifySignUp
+};
+
+12. buat controller untuk authentication 
+A. Buat 2 main function signin dan signup di controllers/auth.controller.js
+const db = require("../models");
+const config = require("../config/auth.config");
+
+const User = db.user;
+const Role = db.role;
+const Op = db.Sequelize.Op;
+
+var jwt = require("jsonwebtoken");
+var bcrypt = require("bcryptjs");
+
+exports.signup = (req, res) => {
+    // Save User to Database
+    User.create({
+        username: req.body.username,
+        email: req.body.email,
+        password: bcrypt.hashSync(req.body.password, 8)
+    })
+        .then(user => {
+            if (req.body.roles) {
+                Role.findAll({
+                    where: {
+                        name: {
+                            [Op.or]: req.body.roles
+                        }
+                    }
+                }).then(roles => {
+                    user.setRoles(roles).then(() => {
+                        res.send({ message: "User was registered successfully!" });
+                    });
+                });
+            } else {
+                // user role =1
+                user.setRoles([1]).then(() => {
+                    res.send({ message: "user was registered successfully!" });
+                });
+            }
+        })
+        .catch(err => {
+            res.status(500).send({ message: err.message });
+        });
+};
+
+exports.signin = (req, res) => {
+    User.fineOne({
+        where: {
+            username: req.body.username
+        }
+    })
+        .then(user => {
+            if (!user) {
+                return res.status(404).send({ message: "User Not Found." });
+            }
+            var passwordIsValid = bcrypt.compareSync(
+                req.body.password,
+                user.password
+            );
+            if (!passwordIsValid) {
+                return res.status(401).send({
+                    accessToken: null,
+                    message: "Invalid Password!"
+                });
+            }
+            var token = jwt.sign({ id: user.id }, config.secret, {
+                expiresIn: 86400 //24 Hours
+            });
+            var authorities = [];
+            user.getRoles().then(roles => {
+                for (let i = 0; i < roles.length; i++) {
+                    authorities.push("ROLE_" + roles[i].name.toUpperCase());
+                }
+                res.status(200).send({
+                    id: user.id,
+                    username: user.username,
+                    email: user.email,
+                    roles: authorities,
+                    accessToken: token
+                });
+            });
+        })
+        .catch(err => {
+            res.status(500).send({ message: err.message });
+        });
+};
+
+B. buat controller buat testing Authorization di controllers/user.controller.js
+dengan 4 fungction 
+– /api/test/all for public access
+– /api/test/user for loggedin users (role: user/moderator/admin)
+– /api/test/mod for users having moderator role
+– /api/test/admin for users having admin role
+
+exports.allAccess = (req, res) => {
+    res.status(200).send("Public Content");
+};
+
+exports.userBoard = (req, res) => {
+    res.status(200).send("User Content");
+};
+
+exports.adminBoard = (req, res) => {
+    res.status(200).send("Admin Content");
+};
+
+exports.moderatorBoard = (req, res) => {
+    res.status(200).send("Moderator Content");
+};
+
+13. Define Routes
+We can separate our routes into 2 part: for Authentication and for Authorization (accessing protected resources).
+A. auth.routes.js
+
+Authentication:
+
+POST /api/auth/signup
+POST /api/auth/signin
+
+const { verifySignUp } = require("../middleware");
+const controller = require("../controllers/auth.controller");
+
+module.exports = function(app) {
+    app.use(function(req, res, next) {
+        res.header(
+            "Access-Control-Allow-Headers",
+            "x-access-token, Origin, Content-Type, Accept"
+        );
+        next();
+    });
+    app.post(
+        "/api/auth/signup",
+        [
+            verifySignUp.checkDuplicateUsernameOrEmail,
+            verifySignUp.checkRolesExisted
+        ],
+        controller.signup
+    );
+    app.post("/api/auth/signin", controller.signin);
+};
+
+B. routes/user.routes.js
+
+GET /api/test/all
+GET /api/test/user for loggedin users (user/moderator/admin)
+GET /api/test/mod for moderator
+GET /api/test/admin for admin
+
+const { authJwt } = require("../middleware");
+const controller = require("../controllers/user.controller");
+
+module.exports = function (app) {
+    app.use(function (req, res, next) {
+        res.header(
+            "Access-Control-Allow-Headers",
+            "x-access-token, Origin, Content-Type, Accept"
+        );
+        next();
+    });
+    app.get("/api/test/all", controller.allAccess);
+    app.get(
+        "/api/test/user",
+        [authJwt.verifyToken],
+        controller.userBoard
+    );
+    app.get(
+        "/api/test/mod",
+        [authJwt.verifyToken, authJwt.isModerator],
+        controller.moderatorBoard
+    );
+    app.get(
+        "/api/test/admin",
+        [authJwt.verifyToken, authJwt.isAdmin],
+        controller.adminBoard
+        );
+};
+
+14. import route ke server.js
+// routes
+require('./routes/auth.routes')(app);
+require('./routes/user.routes')(app);
+
+// set port, listen for requests
